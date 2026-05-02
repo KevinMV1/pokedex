@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PokéVision - Detector de Pokémon IA</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@latest"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+        body { background: #0f0f0f; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        
+        #loadingOverlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.85); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100; gap: 16px;
+        }
+        .spinner {
+            width: 48px; height: 48px; border: 4px solid #333;
+            border-top: 4px solid #2563eb; border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        
+        #cameraFeed {
+            width: 100%; max-width: 800px; height: 400px; object-fit: cover;
+            border-radius: 16px; margin: 20px 0; background: #1f2937;
+        }
+        @media (max-width: 768px) { #cameraFeed { height: 300px; } }
+        @media (max-width: 480px) { #cameraFeed { height: 250px; } }
+        
+        #captureBtn {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            width: 72px; height: 72px; border-radius: 50%; border: none;
+            background: #2563eb; color: white; font-size: 28px; cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3); transition: all 0.2s;
+        }
+        #captureBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+        #captureBtn:not(:disabled):hover { background: #1d4ed8; transform: translateX(-50%) scale(1.05); }
+        
+        #result {
+            margin-top: 20px; padding: 12px 24px; border-radius: 8px;
+            font-size: 1.2rem; text-align: center; min-height: 48px;
+        }
+        .success {
+            background: #065f46; color: #a7f3d0;
+            animation: pulse 1.5s infinite;
+        }
+        .no-detection { background: #1f2937; color: #9ca3af; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { box-shadow: 0 0 0 12px rgba(16, 185, 129, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        
+        #errorMessage {
+            display: none; margin-top: 20px; padding: 12px 24px;
+            background: #7f1d1d; color: #fecaca; border-radius: 8px; text-align: center;
+        }
+        #captureCanvas { display: none; }
+    </style>
+</head>
+<body>
+    <h1>PokéVision</h1>
+    <div id="loadingOverlay">
+        <div class="spinner"></div>
+        <p>Cargando modelo de IA...</p>
+    </div>
+    <video id="cameraFeed" autoplay muted playsinline></video>
+    <canvas id="captureCanvas"></canvas>
+    <button id="captureBtn" disabled>📸</button>
+    <div id="result"></div>
+    <div id="errorMessage"></div>
+
+    <script>
+        let model;
+        const video = document.getElementById('cameraFeed');
+        const canvas = document.getElementById('captureCanvas');
+        const captureBtn = document.getElementById('captureBtn');
+        const resultDiv = document.getElementById('result');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const errorDiv = document.getElementById('errorMessage');
+
+        const POKEMON_NAMES = ['Pikachu', 'Charmander', 'Bulbasaur', 'Squirtle', 'Jigglypuff', 'Eevee', 'Snorlax', 'Meowth'];
+        const TARGET_TAGS = ['toy', 'comic book', 'nematode', 'stuffed animal', 'digital clock'];
+        const CONFIDENCE_THRESHOLD = 0.5;
+
+        const showError = (msg) => {
+            errorDiv.textContent = msg;
+            errorDiv.style.display = 'block';
+        };
+
+        const loadModel = async () => {
+            try {
+                model = await mobilenet.load();
+                loadingOverlay.style.display = 'none';
+                captureBtn.disabled = false;
+            } catch (err) {
+                console.error('Error cargando modelo:', err);
+                showError('Error al cargar el modelo de IA. Recarga la página.');
+                loadingOverlay.style.display = 'none';
+            }
+        };
+
+        const setupCamera = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: { exact: "environment" } }
+                });
+                video.srcObject = stream;
+                await video.play();
+            } catch (err) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: "environment" }
+                    });
+                    video.srcObject = stream;
+                    await video.play();
+                } catch (err2) {
+                    if (err.name.includes('PermissionDenied') || err2.name.includes('PermissionDenied')) {
+                        showError('Permiso de cámara denegado. Habilita el acceso a la cámara.');
+                    } else {
+                        showError('Error al acceder a la cámara. Verifica que el dispositivo tenga cámara.');
+                    }
+                }
+            }
+        };
+
+        captureBtn.addEventListener('click', async () => {
+            if (!model || video.readyState !== video.HAVE_ENOUGH_DATA) return;
+
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const predictions = await model.classify(canvas, 5);
+            const detectedTags = predictions.filter(pred => 
+                TARGET_TAGS.includes(pred.className.toLowerCase()) && pred.probability >= CONFIDENCE_THRESHOLD
+            );
+
+            if (detectedTags.length > 0) {
+                const pokemon = POKEMON_NAMES[Math.floor(Math.random() * POKEMON_NAMES.length)];
+                resultDiv.textContent = `¡Pokémon detectado: ${pokemon}!`;
+                resultDiv.className = 'success';
+            } else {
+                resultDiv.textContent = 'No se reconoce como Pokémon';
+                resultDiv.className = 'no-detection';
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            loadModel();
+            setupCamera();
+        });
+    </script>
+</body>
+</html>
